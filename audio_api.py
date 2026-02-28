@@ -7,7 +7,16 @@ from fastapi.responses import Response
 
 app = FastAPI()
 
-@app.post("/analyze/")
+@app.post(
+    "/analyze/",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "PNG image"
+        }
+    }
+)
 async def analyze(file: UploadFile = File(...)):
 
     contents = await file.read()
@@ -26,4 +35,7 @@ async def analyze(file: UploadFile = File(...)):
     plt.close(fig)
     buf.seek(0)
 
-    return Response(content=buf.getvalue(), media_type="image/png")
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png"
+    )
