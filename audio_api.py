@@ -14,57 +14,35 @@ import soundfile as sf
 app = FastAPI()
 
 BRAND_CYAN = "#289dcc"
-BG_COLOR = "#303440"
+BG_COLOR = "#2f3542"
+
 
 @app.get("/")
 def root():
     return {"status": "alive"}
 
 
-# ===============================
-# 🎧 DESCRIPTIONS TEXTUELLES
-# ===============================
-
-def describe_energy(score):
-    if score < 0.2: return "très douce"
-    elif score < 0.4: return "plutôt posée"
-    elif score < 0.6: return "modérément énergique"
-    elif score < 0.8: return "énergique"
-    else: return "très énergique"
-
-def describe_valence(score):
-    if score < 0.2: return "très sombre"
-    elif score < 0.4: return "plutôt sombre"
-    elif score < 0.6: return "neutre"
-    elif score < 0.8: return "plutôt lumineuse"
-    else: return "très lumineuse"
-
-def describe_dance(score):
-    if score < 0.2: return "très peu dansant"
-    elif score < 0.4: return "plutôt introspectif"
-    elif score < 0.6: return "modérément dansant"
-    elif score < 0.8: return "dansant"
-    else: return "très dansant"
-
-def describe_groove(score):
-    if score < 0.3: return "très changeant et imprévisible"
-    elif score < 0.5: return "changeant et dynamique"
-    elif score < 0.7: return "assez stable"
-    else: return "très stable et régulier"
-
-
 @app.post("/analyze/", response_class=Response)
 async def analyze(file: UploadFile = File(...)):
 
     contents = await file.read()
-    data, sr = sf.read(io.BytesIO(contents))
+    data, samplerate = sf.read(io.BytesIO(contents))
 
-    # ---- Nettoyage nom fichier
+    # ---------- Nettoyage nom ----------
     filename = os.path.splitext(file.filename)[0]
     filename = re.sub(r"\s\(\d+\)$", "", filename)
 
-    # ---- Limite 15 sec
-    data = data[:sr * 15]
+    # ---------- Segment 60s → 75s ----------
+    segment_duration = 15
+    start_second = 60
+
+    start_sample = samplerate * start_second
+    end_sample = start_sample + samplerate * segment_duration
+
+    if len(data) > end_sample:
+        data = data[start_sample:end_sample]
+    else:
+        data = data[:samplerate * segment_duration]
 
     if len(data.shape) > 1:
         data = np.mean(data, axis=1)
@@ -72,67 +50,28 @@ async def analyze(file: UploadFile = File(...)):
     if len(data) < 2048:
         return Response(content=b"Audio too short", media_type="text/plain")
 
-    # ===============================
-    # 🎵 FEATURES OPTIMISÉES
-    # ===============================
+    # ---------- ANALYSE ----------
 
-    # RMS
     rms = float(np.sqrt(np.mean(data**2)))
-    energy_score = min(rms * 10, 1)
+    energy_score = np.clip(rms * 10, 0, 1)
 
-    # FFT
     fft = np.abs(np.fft.rfft(data))
-    freqs = np.fft.rfftfreq(len(data), 1/sr)
+    freqs = np.fft.rfftfreq(len(data), 1/samplerate)
+
     fft_sum = np.sum(fft) if np.sum(fft) != 0 else 1
 
-    spectral_centroid = np.sum(freqs * fft) / fft_sum
-    spectral_bandwidth = np.sqrt(np.sum(((freqs - spectral_centroid)**2) * fft) / fft_sum)
-    zero_crossing_rate = np.mean(np.abs(np.diff(np.sign(data)))) / 2
-    rolloff = freqs[np.where(np.cumsum(fft) >= 0.85 * fft_sum)[0][0]]
+    brightness = np.clip(np.sum(fft[freqs > 5000]) / fft_sum, 0, 1)
+    spectral_width = np.clip(np.std(fft) / (np.max(fft) if np.max(fft)!=0 else 1), 0, 1)
+    noise = np.clip(np.var(data), 0, 1)
+    spectral_decay = np.clip(np.mean(fft[:len(fft)//4]) / fft_sum, 0, 1)
 
-    # Fake rhythmic stability (léger)
-    onset_env = np.abs(np.diff(data))
-    rhythmic_stability = 1 / (1 + np.std(onset_env))
+    tempo_norm = np.clip(np.mean(np.abs(np.diff(data))) * 20, 0, 1)
 
-    # Fake danceability
-    danceability = min((energy_score * 0.4 + rhythmic_stability * 0.6), 1)
-
-    # Fake valence (basé sur brillance)
-    valence_estimate = min((spectral_centroid / 5000), 1)
-
-    # ===============================
-    # 📊 RADAR NORMALISÉ
-    # ===============================
-
-    features = np.array([
-        min((spectral_centroid / 5000), 1),
-        min((spectral_bandwidth / 5000), 1),
-        min(zero_crossing_rate * 10, 1),
-        energy_score,
-        min((rolloff / 10000), 1),
-        danceability
-    ])
-
-    labels = [
-        "Brillance",
-        "Largeur spectrale",
-        "Bruit",
-        "Énergie",
-        "Retombée fréquentielle",
-        "Danceability"
-    ]
-
-    angles = np.linspace(0, 2*np.pi, len(features), endpoint=False)
-    radar_features = features.tolist() + [features[0]]
-    radar_angles = angles.tolist() + [angles[0]]
-
-    # ===============================
-    # 🎨 FIGURE 16:9
-    # ===============================
+    # ---------- FIGURE 16:9 ----------
 
     fig = plt.figure(figsize=(16, 9), facecolor=BG_COLOR)
 
-    # ---- Logo
+    # ----- LOGO -----
     try:
         logo = mpimg.imread("logo.png")
         ax_logo = fig.add_axes([0.05, 0.80, 0.25, 0.15])
@@ -141,81 +80,127 @@ async def analyze(file: UploadFile = File(...)):
     except:
         pass
 
-    # ---- Titre
+    # ----- TITRE -----
     fig.text(
-        0.07,
-        0.74,
+        0.05, 0.74,
         filename.upper(),
-        ha="left",
-        va="top",
+        fontsize=22,
         color="white",
-        fontsize=24,
-        fontweight="bold"
+        weight="bold"
     )
 
-    # ---- Profil texte
-    profil_text = (
-        f"Énergie : {describe_energy(energy_score)}\n"
-        f"Groove : {describe_groove(rhythmic_stability)}\n"
-        f"Sensation : {describe_dance(danceability)}\n"
-        f"Ambiance : {describe_valence(valence_estimate)}"
-    )
-
-    fig.text(
-        0.07,
-        0.65,
-        profil_text,
-        ha="left",
-        va="top",
-        color="white",
-        fontsize=15,
-        linespacing=1.6
-    )
-
-    # ---- Barre bleue
-    ax_bar = fig.add_axes([0.06, 0.52, 0.004, 0.16])
+    # ----- BARRE BLEUE -----
+    ax_bar = fig.add_axes([0.045, 0.58, 0.006, 0.20])
     ax_bar.set_facecolor(BRAND_CYAN)
     ax_bar.set_xticks([])
     ax_bar.set_yticks([])
     for spine in ax_bar.spines.values():
         spine.set_visible(False)
 
-    # ---- Radar
-    ax_radar = fig.add_axes([0.55, 0.45, 0.35, 0.42], polar=True)
+    # ----- TEXTE QUALITATIF -----
+
+    def describe_energy(score):
+        if score < 0.2: return "très douce"
+        elif score < 0.4: return "plutôt posée"
+        elif score < 0.6: return "modérément énergique"
+        elif score < 0.8: return "énergique"
+        else: return "très énergique"
+
+    def describe_valence(score):
+        if score < 0.2: return "très sombre"
+        elif score < 0.4: return "plutôt sombre"
+        elif score < 0.6: return "neutre"
+        elif score < 0.8: return "plutôt lumineuse"
+        else: return "très lumineuse"
+
+    profil_text = (
+        f"Énergie : {describe_energy(energy_score)}\n"
+        f"Brillance : {describe_valence(brightness)}\n"
+        f"Sensation : {describe_energy(tempo_norm)}"
+    )
+
+    fig.text(
+        0.06, 0.72,
+        profil_text,
+        fontsize=15,
+        color="white",
+        va="top",
+        linespacing=1.6
+    )
+
+    # ----- RADAR PROPRE -----
+
+    categories = [
+        "Tempo",
+        "Brillance",
+        "Largeur spectrale",
+        "Bruit",
+        "Énergie",
+        "Retombée freq."
+    ]
+
+    features = np.array([
+        tempo_norm,
+        brightness,
+        spectral_width,
+        noise,
+        energy_score,
+        spectral_decay
+    ])
+
+    angles = np.linspace(0, 2*np.pi, len(features), endpoint=False)
+    radar_angles = np.concatenate((angles, [angles[0]]))
+    radar_values = np.concatenate((features, [features[0]]))
+
+    ax_radar = fig.add_axes([0.55, 0.42, 0.35, 0.45], polar=True)
     ax_radar.set_facecolor(BG_COLOR)
 
-    ax_radar.fill(radar_angles, radar_features, color=BRAND_CYAN, alpha=0.45)
-    ax_radar.plot(radar_angles, radar_features, color="white", linewidth=2)
+    ax_radar.plot(radar_angles, radar_values, color="white", linewidth=2)
+    ax_radar.fill(radar_angles, radar_values, color=BRAND_CYAN, alpha=0.45)
 
     ax_radar.set_ylim(0, 1)
+
+    # Supprimer degrés et valeurs
+    ax_radar.set_xticks(angles)
+    ax_radar.set_xticklabels([])
     ax_radar.set_yticklabels([])
-    ax_radar.xaxis.grid(True, color="white", alpha=0.35)
-    ax_radar.yaxis.grid(True, color="white", alpha=0.35)
-    ax_radar.spines['polar'].set_color("white")
 
-    for angle, label in zip(angles, labels):
-        ax_radar.text(angle, 1.15, label,
-                      size=12, color="white",
-                      ha="center", va="center")
+    ax_radar.grid(color="white", alpha=0.3)
+    ax_radar.spines["polar"].set_color("white")
 
-    # ---- Waveform
+    # Labels éloignés
+    for angle, label in zip(angles, categories):
+        ax_radar.text(
+            angle,
+            1.25,
+            label,
+            color="white",
+            fontsize=12,
+            ha="center",
+            va="center"
+        )
+
+    # ----- WAVEFORM -----
+
     ax_wave = fig.add_axes([0.05, 0.08, 0.90, 0.25])
-    ax_wave.set_facecolor("#1e2128")
+    ax_wave.set_facecolor("#1e272e")
 
-    times = np.linspace(0, len(data)/sr, num=len(data))
+    times = np.linspace(0, len(data)/samplerate, num=len(data))
     step = max(len(data)//3000, 1)
 
-    ax_wave.fill_between(times[::step], data[::step], color=BRAND_CYAN, alpha=0.9)
+    ax_wave.fill_between(times[::step], data[::step], color=BRAND_CYAN)
 
-    ax_wave.set_xlim(0, len(data)/sr)
+    ax_wave.set_xlim(0, len(data)/samplerate)
     ax_wave.set_ylim(-1, 1)
-    ax_wave.set_title("Waveform", color="white", fontsize=16)
-    ax_wave.tick_params(colors='white')
+
+    ax_wave.set_title("Waveform", color="white")
+    ax_wave.tick_params(colors="white")
 
     for spine in ax_wave.spines.values():
         spine.set_color("white")
 
-    # ---- Export
+    # ----- EXPORT -----
+
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=110)
     plt.close(fig)
