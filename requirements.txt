@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-librosa
 numpy
 matplotlib
-python-multipart
+soundfile
