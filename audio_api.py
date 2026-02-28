@@ -26,30 +26,36 @@ def root():
 )
 async def analyze(file: UploadFile = File(...)):
 
-    contents = await file.read()
+    try:
+        contents = await file.read()
 
-    # 🔥 On limite fortement la charge
-    y, sr = librosa.load(
-        io.BytesIO(contents),
-        sr=22050,
-        mono=True,
-        duration=30   # max 30 secondes
-    )
+        # 🔥 On limite la taille lue (sécurité RAM)
+        max_bytes = 5 * 1024 * 1024  # 5MB max analysés
+        contents = contents[:max_bytes]
 
-    # 🔥 Tempo simplifié (plus léger)
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)[0]
+        # 🔥 On charge seulement 20 secondes max
+        y, sr = librosa.load(
+            io.BytesIO(contents),
+            sr=22050,
+            duration=20
+        )
 
-    fig = plt.figure(figsize=(6,4))
-    plt.plot(y[::30])
-    plt.title(f"BPM: {round(float(tempo),1)}")
+        # 🔥 On downsample encore pour réduire la charge
+        y = y[::5]
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=90)
-    plt.close(fig)
-    buf.seek(0)
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        tempo = float(np.array(tempo).flatten()[0])
 
-    return Response(
-        content=buf.getvalue(),
-        media_type="image/png"
-    )
+        fig = plt.figure(figsize=(6, 4))
+        plt.plot(y[:3000])
+        plt.title(f"BPM: {round(tempo, 1)}")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=80)
+        plt.close(fig)
+        buf.seek(0)
+
+        return Response(content=buf.getvalue(), media_type="image/png")
+
+    except Exception as e:
+        return {"error": str(e)}
