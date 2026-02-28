@@ -2,11 +2,11 @@ import matplotlib
 matplotlib.use("Agg")
 
 import io
-import librosa
 import numpy as np
 import matplotlib.pyplot as plt
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import Response
+import soundfile as sf
 
 app = FastAPI()
 
@@ -29,26 +29,39 @@ async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
 
-        # 🔥 On limite la taille lue (sécurité RAM)
-        max_bytes = 5 * 1024 * 1024  # 5MB max analysés
-        contents = contents[:max_bytes]
+        # 🔥 Lire seulement 15 secondes max
+        data, samplerate = sf.read(io.BytesIO(contents))
+        max_samples = samplerate * 15
+        data = data[:max_samples]
 
-        # 🔥 On charge seulement 20 secondes max
-        y, sr = librosa.load(
-            io.BytesIO(contents),
-            sr=22050,
-            duration=20
-        )
+        # 🔥 Si stéréo → mono
+        if len(data.shape) > 1:
+            data = np.mean(data, axis=1)
 
-        # 🔥 On downsample encore pour réduire la charge
-        y = y[::5]
+        # 🔥 Estimation BPM ultra simple (basée sur pics RMS)
+        frame_size = 1024
+        energy = [
+            np.sum(np.abs(data[i:i+frame_size]))
+            for i in range(0, len(data), frame_size)
+        ]
 
-        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-        tempo = float(np.array(tempo).flatten()[0])
+        energy = np.array(energy)
+        peaks = np.where(energy > np.mean(energy))[0]
 
-        fig = plt.figure(figsize=(6, 4))
-        plt.plot(y[:3000])
-        plt.title(f"BPM: {round(tempo, 1)}")
+        if len(peaks) > 1:
+            intervals = np.diff(peaks)
+            avg_interval = np.mean(intervals)
+            bpm = 60 * samplerate / (avg_interval * frame_size)
+        else:
+            bpm = 0
+
+        bpm = round(float(bpm), 1)
+
+        # 🔥 Graph léger
+        fig = plt.figure(figsize=(6,4))
+        plt.plot(data[:3000])
+        plt.title(f"BPM approx: {bpm}")
+        plt.tight_layout()
 
         buf = io.BytesIO()
         plt.savefig(buf, format="png", dpi=80)
